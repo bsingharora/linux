@@ -288,6 +288,32 @@ int hmm_vma_get_pfns(struct vm_area_struct *vma,
 		     unsigned long end,
 		     hmm_pfn_t *pfns);
 bool hmm_vma_range_done(struct vm_area_struct *vma, struct hmm_range *range);
+
+
+/*
+ * Fault memory on behalf of device driver unlike handle_mm_fault() it will not
+ * migrate any device memory back to system memory. The hmm_pfn_t array will be
+ * updated with fault result and current snapshot of the CPU page table for the
+ * range.
+ *
+ * The mmap_sem must be taken in read mode before entering and it might be drop
+ * by the function if block argument is false, when that happen the function
+ * returns -EAGAIN.
+ *
+ * Return value does not reflect if the fault was successfull for every single
+ * address or not, you need to inspect the hmm_pfn_t array to determine fault
+ * status for that address. Trying to fault inside an invalid vma will result
+ * in -EINVAL.
+ *
+ * See function description in mm/hmm.c for documentation.
+ */
+int hmm_vma_fault(struct vm_area_struct *vma,
+		  struct hmm_range *range,
+		  unsigned long start,
+		  unsigned long end,
+		  hmm_pfn_t *pfns,
+		  bool write,
+		  bool block);
 #endif /* IS_ENABLED(CONFIG_HMM_MIRROR) */
 
 
