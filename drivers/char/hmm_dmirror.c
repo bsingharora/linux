@@ -74,7 +74,14 @@ struct dmirror {
 struct dmirror_device {
 	dev_t			dev;
 	struct cdev		cdevice;
+	struct hmm_devmem	*devmem;
 	struct platform_device	*pdevice;
+	struct hmm_device	*hmm_device;
+	struct page		*frees;
+	spinlock_t		lock;
+
+	unsigned long		calloc;
+	unsigned long		cfree;
 };
 
 static inline unsigned long dmirror_pt_pgd(unsigned long addr)
@@ -406,12 +413,16 @@ static int dummy_fops_open(struct inode *inode, struct file *filp)
 
 static int dummy_fops_release(struct inode *inode, struct file *filp)
 {
+	struct dmirror_device *mdevice;
 	struct dmirror *dmirror;
 
 	if (!filp->private_data)
 		return 0;
 
 	dmirror = filp->private_data;
+	mdevice = dmirror->mdevice;
+	printk(KERN_INFO "DEVICE PAGE %ld %ld (%ld)\n", mdevice->calloc, mdevice->cfree, mdevice->calloc - mdevice->cfree);
+
 	dmirror_del(dmirror);
 	filp->private_data = NULL;
 
@@ -538,6 +549,14 @@ static int dummy_fault(struct dmirror *dmirror,
 	return 0;
 }
 
+static bool dummy_device_is_mine(struct dmirror_device *mdevice,
+				 struct page *page)
+{
+	if (!is_zone_device_page(page))
+		return false;
+	return page->pgmap->data == mdevice->devmem;
+}
+
 static int dummy_do_read(struct dmirror *dmirror,
 			 unsigned long addr,
 			 unsigned long end,
@@ -557,6 +576,11 @@ static int dummy_do_read(struct dmirror *dmirror,
 		page = dmirror_pt_page(*dpte);
 		if (!page) {
 			return -ENOENT;
+		}
+		if (is_zone_device_page(page)) {
+			if (!dummy_device_is_mine(mdevice, page))
+				return -ENOENT;
+			page = (void *)hmm_devmem_page_get_drvdata(page);
 		}
 
 		tmp = kmap(page);
@@ -633,6 +657,11 @@ static int dummy_do_write(struct dmirror *dmirror,
 		page = dmirror_pt_page(*dpte);
 		if (!page || !(*dpte & DPT_WRITE))
 			return -ENOENT;
+		if (is_zone_device_page(page)) {
+			if (!dummy_device_is_mine(mdevice, page))
+				return -ENOENT;
+			page = (void *)hmm_devmem_page_get_drvdata(page);
+		}
 
 		tmp = kmap(page);
 		memcpy(tmp, ptr, PAGE_SIZE);
@@ -691,11 +720,175 @@ again:
 	return 0;
 }
 
+static struct page *dummy_device_alloc_page(struct dmirror_device *mdevice)
+{
+	struct page *dpage = NULL, *rpage;
+
+	/*
+	 * This is a fake device so we alloc real system memory to fake
+	 * our device memory
+	 */
+	rpage = alloc_page(GFP_HIGHUSER);
+	if (!rpage)
+		return NULL;
+
+	spin_lock(&mdevice->lock);
+	if (mdevice->frees) {
+		dpage = mdevice->frees;
+		mdevice->frees = dpage->s_mem;
+	} else {
+		spin_unlock(&mdevice->lock);
+		__free_page(rpage);
+		return NULL;
+	}
+
+	if (!trylock_page(dpage)) {
+		dpage->s_mem = mdevice->frees;
+		mdevice->frees = dpage;
+		spin_unlock(&mdevice->lock);
+		__free_page(rpage);
+		return NULL;
+	}
+	mdevice->calloc++;
+	spin_unlock(&mdevice->lock);
+
+	hmm_devmem_page_set_drvdata(dpage, (unsigned long)rpage);
+	get_page(dpage);
+	return dpage;
+}
+
+struct dummy_migrate {
+	struct dmirror_device		*mdevice;
+	struct hmm_dmirror_migrate	*dmigrate;
+};
+
+static void dummy_migrate_alloc_and_copy(struct vm_area_struct *vma,
+					 const unsigned long *src_pfns,
+					 unsigned long *dst_pfns,
+					 unsigned long start,
+					 unsigned long end,
+					 void *private)
+{
+	struct dummy_migrate *dmigrate = private;
+	struct dmirror_device *mdevice;
+	unsigned long addr, size;
+
+	if (!dmigrate)
+		return;
+
+	mdevice = dmigrate->mdevice;
+
+	for (addr = start; addr < end; addr += size, src_pfns++, dst_pfns++) {
+		struct page *spage = migrate_pfn_to_page(*src_pfns);
+		struct page *dpage, *rpage;
+
+		size = migrate_pfn_size(*src_pfns);
+		*dst_pfns = (*src_pfns) & MIGRATE_PFN_HUGE;
+
+		if ((*src_pfns) & MIGRATE_PFN_HUGE) {
+			// FIXME support huge
+			continue;
+		}
+
+		if (!spage || !(*src_pfns & MIGRATE_PFN_MIGRATE))
+			continue;
+		if (*src_pfns & MIGRATE_PFN_DEVICE) {
+			if (!dummy_device_is_mine(mdevice, spage)) {
+				continue;
+			}
+			spage = (void *)hmm_devmem_page_get_drvdata(spage);
+		}
+
+		dpage = dummy_device_alloc_page(mdevice);
+		if (!dpage)
+			continue;
+
+		rpage = (void *)hmm_devmem_page_get_drvdata(dpage);
+
+		copy_highpage(rpage, spage);
+		*dst_pfns = page_to_pfn(dpage) |
+			    MIGRATE_PFN_VALID |
+			    MIGRATE_PFN_DEVICE |
+			    MIGRATE_PFN_LOCKED;
+	}
+}
+
+static void dummy_migrate_finalize_and_map(struct vm_area_struct *vma,
+					   const unsigned long *src_pfns,
+					   const unsigned long *dst_pfns,
+					   unsigned long start,
+					   unsigned long end,
+					   void *private)
+{
+	struct dummy_migrate *dmigrate = private;
+	unsigned long addr, size;
+
+	if (!dmigrate || !dmigrate->dmigrate)
+		return;
+
+	for (addr = start; addr < end; addr+= size, src_pfns++, dst_pfns++) {
+		struct page *page = migrate_pfn_to_page(*dst_pfns);
+		size = migrate_pfn_size(*src_pfns);
+
+		if (!(*src_pfns & MIGRATE_PFN_MIGRATE))
+			continue;
+		if (!dummy_device_is_mine(dmigrate->mdevice, page))
+			continue;
+		dmigrate->dmigrate->npages++;
+	}
+}
+
+static const struct migrate_vma_ops dmirror_migrate_ops = {
+	.alloc_and_copy		= dummy_migrate_alloc_and_copy,
+	.finalize_and_map	= dummy_migrate_finalize_and_map,
+};
+
+static int dummy_migrate(struct dmirror *dmirror,
+			 struct hmm_dmirror_migrate *dmigrate)
+{
+	unsigned long addr = dmigrate->addr, end;
+	struct mm_struct *mm = dmirror->mm;
+	struct vm_area_struct *vma;
+	struct dummy_migrate tmp;
+	int ret;
+
+	tmp.mdevice = dmirror->mdevice;
+	tmp.dmigrate = dmigrate;
+
+	down_read(&mm->mmap_sem);
+	end = addr + (dmigrate->npages << PAGE_SHIFT);
+	vma = find_vma_intersection(mm, addr, end);
+	if (!vma || vma->vm_start > addr || vma->vm_end < end) {
+		ret = -EINVAL;
+		goto out;
+	}
+
+	for (dmigrate->npages = 0; addr < end;) {
+		unsigned long src_pfns[64];
+		unsigned long dst_pfns[64];
+		unsigned long next;
+
+		next = min(end, addr + (64 << PAGE_SHIFT));
+
+		ret = migrate_vma(&dmirror_migrate_ops, vma, 64, addr,
+				  next, src_pfns, dst_pfns, &tmp);
+		if (ret)
+			goto out;
+
+		addr = next;
+	}
+
+out:
+	up_read(&mm->mmap_sem);
+	return ret;
+}
+
 static long dummy_fops_unlocked_ioctl(struct file *filp,
 				      unsigned int command,
 				      unsigned long arg)
 {
 	void __user *uarg = (void __user *)arg;
+	struct hmm_dmirror_migrate dmigrate;
 	struct hmm_dmirror_write dwrite;
 	struct hmm_dmirror_read dread;
 	struct dmirror *dmirror;
@@ -726,6 +919,16 @@ static long dummy_fops_unlocked_ioctl(struct file *filp,
 			return ret;
 
 		return copy_to_user(uarg, &dwrite, sizeof(dwrite));
+	case HMM_DMIRROR_MIGRATE:
+		ret = copy_from_user(&dmigrate, uarg, sizeof(dmigrate));
+		if (ret)
+			return ret;
+
+		ret = dummy_migrate(dmirror, &dmigrate);
+		if (ret)
+			return ret;
+
+		return copy_to_user(uarg, &dmigrate, sizeof(dmigrate));
 	default:
 		ret = -EINVAL;
 		break;
@@ -745,13 +948,129 @@ static const struct file_operations dmirror_fops = {
 	.owner		= THIS_MODULE,
 };
 
+static void dummy_devmem_free(struct hmm_devmem *devmem,
+			      struct page *page)
+{
+	struct dmirror_device *mdevice;
+	struct page *rpage;
+
+	mdevice = dev_get_drvdata(devmem->device);
+	rpage = (struct page *)hmm_devmem_page_get_drvdata(page);
+	__free_page(rpage);
+
+	spin_lock(&mdevice->lock);
+	mdevice->cfree++;
+	page->s_mem = mdevice->frees;
+	mdevice->frees = page;
+	spin_unlock(&mdevice->lock);
+}
+
+struct dummy_devmem_fault {
+	struct dmirror_device	*mdevice;
+};
+
+static void dummy_devmem_fault_alloc_and_copy(struct vm_area_struct *vma,
+					      const unsigned long *src_pfns,
+					      unsigned long *dst_pfns,
+					      unsigned long start,
+					      unsigned long end,
+					      void *private)
+{
+	struct dummy_devmem_fault *fault = private;
+	unsigned long addr, size;
+
+	for (addr = start; addr < end; addr += size, src_pfns++, dst_pfns++) {
+		struct page *dpage, *spage;
+
+		size = migrate_pfn_size(*src_pfns);
+		*dst_pfns = (*src_pfns & MIGRATE_PFN_HUGE) | MIGRATE_PFN_ERROR;
+
+		if ((*src_pfns) & MIGRATE_PFN_HUGE) {
+			// FIXME support huge
+			continue;
+		}
+
+		spage = migrate_pfn_to_page(*src_pfns);
+		if (!spage || !(*src_pfns & MIGRATE_PFN_MIGRATE))
+			continue;
+		if (!dummy_device_is_mine(fault->mdevice, spage))
+			continue;
+		spage = (void *)hmm_devmem_page_get_drvdata(spage);
+
+		dpage = hmm_vma_alloc_locked_page(vma, addr);
+		if (!dpage) {
+			*dst_pfns = MIGRATE_PFN_ERROR;
+			continue;
+		}
+
+		copy_highpage(dpage, spage);
+		*dst_pfns = page_to_pfn(dpage) |
+			    MIGRATE_PFN_VALID |
+			    MIGRATE_PFN_LOCKED;
+	}
+}
+
+void dummy_devmem_fault_finalize_and_map(struct vm_area_struct *vma,
+					 const unsigned long *src_pfns,
+					 const unsigned long *dst_pfns,
+					 unsigned long start,
+					 unsigned long end,
+					 void *private)
+{
+}
+
+static const struct migrate_vma_ops dummy_devmem_migrate = {
+	.alloc_and_copy		= dummy_devmem_fault_alloc_and_copy,
+	.finalize_and_map	= dummy_devmem_fault_finalize_and_map,
+};
+
+static int dummy_devmem_fault(struct hmm_devmem *devmem,
+			      struct vm_area_struct *vma,
+			      unsigned long addr,
+			      struct page *page,
+			      unsigned flags,
+			      pmd_t *pmdp)
+{
+	unsigned long src_pfns, dst_pfns = 0;
+	struct dummy_devmem_fault fault;
+	unsigned long start, end;
+
+	fault.mdevice = dev_get_drvdata(devmem->device);
+
+	/* FIXME demonstrate how we can adjust migrate range */
+	start = addr;
+	end = addr + PAGE_SIZE;
+	return hmm_devmem_fault_range(devmem, vma, &dummy_devmem_migrate,
+				      1, &src_pfns, &dst_pfns, start,
+				      addr, end, &fault);
+}
+
+static const struct hmm_devmem_ops dmirror_devmem_ops = {
+	.free		= dummy_devmem_free,
+	.fault		= dummy_devmem_fault,
+};
+
 static int dmirror_probe(struct platform_device *pdev)
 {
 	struct dmirror_device *mdevice = platform_get_drvdata(pdev);
+	unsigned long pfn;
 	int ret;
+
+	mdevice->hmm_device = hmm_device_new(mdevice);
+	if (IS_ERR(mdevice->hmm_device))
+		return PTR_ERR(mdevice->hmm_device);
+	mdevice->devmem = hmm_devmem_add(&dmirror_devmem_ops,
+					 &mdevice->hmm_device->device,
+					 64 << 20);
+	if (IS_ERR(mdevice->devmem)) {
+		hmm_device_put(mdevice->hmm_device);
+		return PTR_ERR(mdevice->devmem);
+	}
 
 	ret = alloc_chrdev_region(&mdevice->dev, 0, 1, "HMM_DMIRROR");
 	if (ret < 0) {
+		hmm_devmem_remove(mdevice->devmem);
+		hmm_device_put(mdevice->hmm_device);
 		return ret;
 	}
 
@@ -759,8 +1078,23 @@ static int dmirror_probe(struct platform_device *pdev)
 	ret = cdev_add(&mdevice->cdevice, mdevice->dev, 1);
 	if (ret) {
 		unregister_chrdev_region(mdevice->dev, 1);
+		hmm_devmem_remove(mdevice->devmem);
+		hmm_device_put(mdevice->hmm_device);
 		return ret;
 	}
+
+	/* Build list of free struct page */
+	spin_lock_init(&mdevice->lock);
+	mdevice->frees = NULL;
+	for (pfn = mdevice->devmem->pfn_first; pfn < mdevice->devmem->pfn_last; pfn++) {
+		struct page *page = pfn_to_page(pfn);
+
+		page->s_mem = mdevice->frees;
+		mdevice->frees = page;
+	}
+
+	mdevice->calloc = 0;
+	mdevice->cfree = 0;
 
 	return 0;
 }
@@ -769,6 +1103,8 @@ static int dmirror_remove(struct platform_device *pdev)
 {
 	struct dmirror_device *mdevice = platform_get_drvdata(pdev);
 
+	hmm_devmem_remove(mdevice->devmem);
+	hmm_device_put(mdevice->hmm_device);
 	cdev_del(&mdevice->cdevice);
 	unregister_chrdev_region(mdevice->dev, 1);
 	return 0;
