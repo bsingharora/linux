@@ -2124,9 +2124,10 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
 {
 	struct migrate_vma *migrate = walk->private;
 	struct mm_struct *mm = walk->vma->vm_mm;
-	unsigned long addr = start;
+	unsigned long addr = start, unmaped = 0;
 	spinlock_t *ptl;
 	pte_t *ptep;
+	int ret = 0;
 
 	if (pmd_none(*pmdp) || pmd_trans_unstable(pmdp)) {
 		/* FIXME support THP */
@@ -2134,9 +2135,12 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
 	}
 
 	ptep = pte_offset_map_lock(mm, pmdp, addr, &ptl);
+	arch_enter_lazy_mmu_mode();
+
 	for (; addr < end; addr += PAGE_SIZE, ptep++) {
 		unsigned long flags, pfn;
 		struct page *page;
+		swp_entry_t entry;
 		pte_t pte;
 		int ret;
 
@@ -2168,17 +2172,50 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
 		flags = MIGRATE_PFN_VALID | MIGRATE_PFN_MIGRATE;
 		flags |= pte_write(pte) ? MIGRATE_PFN_WRITE : 0;
 
+		/*
+		 * Optimize for common case where page is only map once in one
+		 * process. If we can lock the page then we can safely setup
+		 * special migration page table entry now.
+		 */
+		if (trylock_page(page)) {
+			pte_t swp_pte;
+
+			flags |= MIGRATE_PFN_LOCKED;
+			ptep_get_and_clear(mm, addr, ptep);
+
+			/* Setup special migration page table entry */
+			entry = make_migration_entry(page, pte_write(pte));
+			swp_pte = swp_entry_to_pte(entry);
+			if (pte_soft_dirty(pte))
+				swp_pte = pte_swp_mksoft_dirty(swp_pte);
+			set_pte_at(mm, addr, ptep, swp_pte);
+
+			/*
+			 * This is like regulat unmap we remove the rmap and
+			 * drop page refcount. Page won't be free as we took
+			 * a reference just above.
+			 */
+			page_remove_rmap(page, false);
+			put_page(page);
+			unmaped++;
+		}
+
 next:
 		migrate->src[migrate->npages++] = pfn | flags;
 		ret = migrate_vma_array_full(migrate);
 		if (ret) {
-			pte_unmap_unlock(ptep, ptl);
-			return ret;
+			ptep++;
+			break;
 		}
 	}
+	arch_leave_lazy_mmu_mode();
 	pte_unmap_unlock(ptep - 1, ptl);
 
-	return 0;
+	/* Only flush the TLB if we actually modified any entries */
+	if (unmaped)
+		flush_tlb_range(walk->vma, start, end);
+
+	return ret;
 }
 
 /*
@@ -2202,7 +2239,13 @@ static void migrate_vma_collect(struct migrate_vma *migrate)
 	mm_walk.mm = migrate->vma->vm_mm;
 	mm_walk.private = migrate;
 
+	mmu_notifier_invalidate_range_start(mm_walk.mm,
+					    migrate->start,
+					    migrate->end);
 	walk_page_range(migrate->start, migrate->end, &mm_walk);
+	mmu_notifier_invalidate_range_end(mm_walk.mm,
+					  migrate->start,
+					  migrate->end);
 }
 
 /*
@@ -2246,20 +2289,25 @@ static bool migrate_vma_check_page(struct page *page)
  */
 static void migrate_vma_prepare(struct migrate_vma *migrate)
 {
-	unsigned long addr = migrate->start, i = 0, size;
+	unsigned long addr = migrate->start, i = 0, size, restore = 0;
 	bool allow_drain = true;
 
 	lru_add_drain();
 
 	for (; i < migrate->npages && migrate->cpages; i++, addr += size) {
 		struct page *page = migrate_pfn_to_page(migrate->src[i]);
+		bool remap = true;
+
 		size = migrate_pfn_size(migrate->src[i]);
 
 		if (!page)
 			continue;
 
-		lock_page(page);
-		migrate->src[i] |= MIGRATE_PFN_LOCKED;
+		if (!(migrate->src[i] & MIGRATE_PFN_LOCKED)) {
+			remap = false;
+			lock_page(page);
+			migrate->src[i] |= MIGRATE_PFN_LOCKED;
+		}
 
 		if (!PageLRU(page) && allow_drain) {
 			/* Drain CPU's pagevec */
@@ -2268,10 +2316,16 @@ static void migrate_vma_prepare(struct migrate_vma *migrate)
 		}
 
 		if (isolate_lru_page(page)) {
-			migrate->src[i] = 0;
-			unlock_page(page);
-			migrate->cpages--;
-			put_page(page);
+			if (remap) {
+				migrate->src[i] &= ~MIGRATE_PFN_MIGRATE;
+				migrate->cpages--;
+				restore++;
+			} else {
+				migrate->src[i] = 0;
+				unlock_page(page);
+				migrate->cpages--;
+				put_page(page);
+			}
 			continue;
 		}
 
@@ -2279,12 +2333,36 @@ static void migrate_vma_prepare(struct migrate_vma *migrate)
 		put_page(page);
 
 		if (!migrate_vma_check_page(page)) {
-			migrate->src[i] = 0;
-			unlock_page(page);
-			migrate->cpages--;
+			if (remap) {
+				migrate->src[i] &= ~MIGRATE_PFN_MIGRATE;
+				migrate->cpages--;
+				restore++;
 
-			putback_lru_page(page);
+				get_page(page);
+				putback_lru_page(page);
+			} else {
+				migrate->src[i] = 0;
+				unlock_page(page);
+				migrate->cpages--;
+
+				putback_lru_page(page);
+			}
 		}
+	}
+
+	for (i = 0; i < migrate->npages && restore; i++, addr += size) {
+		struct page *page = migrate_pfn_to_page(migrate->src[i]);
+		size = migrate_pfn_size(migrate->src[i]);
+
+		if (!page || (migrate->src[i] & MIGRATE_PFN_MIGRATE))
+			continue;
+
+		remove_migration_pte(page, migrate->vma, addr, page);
+
+		migrate->src[i] = 0;
+		unlock_page(page);
+		put_page(page);
+		restore--;
 	}
 }
 
