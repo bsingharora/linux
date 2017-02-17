@@ -728,7 +728,7 @@ static struct page *dummy_device_alloc_page(struct dmirror_device *mdevice)
 	 * This is a fake device so we alloc real system memory to fake
 	 * our device memory
 	 */
-	rpage = alloc_page(GFP_HIGHUSER);
+	rpage = alloc_page(GFP_HIGHUSER | __GFP_ZERO);
 	if (!rpage)
 		return NULL;
 
@@ -790,9 +790,7 @@ static void dummy_migrate_alloc_and_copy(struct vm_area_struct *vma,
 			continue;
 		}
 
-		if (!spage || !(*src_pfns & MIGRATE_PFN_MIGRATE))
-			continue;
-		if (*src_pfns & MIGRATE_PFN_DEVICE) {
+		if (spage && (*src_pfns & MIGRATE_PFN_DEVICE)) {
 			if (!dummy_device_is_mine(mdevice, spage)) {
 				continue;
 			}
@@ -805,7 +803,8 @@ static void dummy_migrate_alloc_and_copy(struct vm_area_struct *vma,
 
 		rpage = (void *)hmm_devmem_page_get_drvdata(dpage);
 
-		copy_highpage(rpage, spage);
+		if (spage)
+			copy_highpage(rpage, spage);
 		*dst_pfns = page_to_pfn(dpage) |
 			    MIGRATE_PFN_VALID |
 			    MIGRATE_PFN_DEVICE |
