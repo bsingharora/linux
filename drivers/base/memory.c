@@ -323,6 +323,8 @@ store_mem_state(struct device *dev,
 		online_type = MMOP_ONLINE_KERNEL;
 	else if (sysfs_streq(buf, "online_movable"))
 		online_type = MMOP_ONLINE_MOVABLE;
+	else if (sysfs_streq(buf, "online_coherent"))
+		online_type = MMOP_ONLINE_COHERENT;
 	else if (sysfs_streq(buf, "online"))
 		online_type = MMOP_ONLINE_KEEP;
 	else if (sysfs_streq(buf, "offline"))
@@ -345,6 +347,7 @@ store_mem_state(struct device *dev,
 	case MMOP_ONLINE_KERNEL:
 	case MMOP_ONLINE_MOVABLE:
 	case MMOP_ONLINE_KEEP:
+	case MMOP_ONLINE_COHERENT:
 		mem->online_type = online_type;
 		ret = device_online(&mem->dev);
 		break;

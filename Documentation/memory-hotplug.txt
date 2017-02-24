@@ -298,6 +298,17 @@ available memory will be increased.
 Currently, newly added memory is added as ZONE_NORMAL (for powerpc, ZONE_DMA).
 This may be changed in future.
 
+% echo online_coherent > /sys/devices/system/memory/memoryXXX/state
+
+After this memory is onlined, same as "echo online" above, except that the node
+is marked as N_COHERENT_MEMORY and it is not a part of N_MEMORY. Effectively
+it means that this node is not a part of any node zonelist, except itself.
+Ideally N_COHERENT_MEMORY nodes have no cpus on them, although that is not
+a strict requirement. A user space program can use numactl with -a to allocate
+on this node with an explicity node specification. From the kernel, one may
+use __GFP_THISNODE with the node specified and alloc_pages_node() to allocate.
+NOTE: This node will not show up in mems_allowed and will not work with
+cpusets in general.
 
 
 ------------------------

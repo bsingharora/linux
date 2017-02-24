@@ -393,6 +393,7 @@ enum node_states {
 	N_MEMORY = N_HIGH_MEMORY,
 #endif
 	N_CPU,		/* The node has one or more cpus */
+	N_COHERENT_MEMORY,	/* The node has cache coherent device memory */
 	NR_NODE_STATES
 };
 
