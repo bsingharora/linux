@@ -214,6 +214,8 @@ static int mpol_set_nodemask(struct mempolicy *pol,
 		     const nodemask_t *nodes, struct nodemask_scratch *nsc)
 {
 	int ret;
+	int n;
+	nodemask_t tmp;
 
 	/* if mode is MPOL_DEFAULT, pol is NULL. This is right. */
 	if (pol == NULL)
@@ -223,6 +225,14 @@ static int mpol_set_nodemask(struct mempolicy *pol,
 		  cpuset_current_mems_allowed, node_states[N_MEMORY]);
 
 	VM_BUG_ON(!nodes);
+
+	for_each_node_mask(n, *nodes) {
+		if (node_state(n, N_COHERENT_MEMORY)) {
+			tmp = nodemask_of_node(n);
+			nodes_or(nsc->mask1, nsc->mask1, tmp);
+		}
+	}
+
 	if (pol->mode == MPOL_PREFERRED && nodes_empty(*nodes))
 		nodes = NULL;	/* explicit local allocation */
 	else {
@@ -1432,7 +1442,8 @@ SYSCALL_DEFINE4(migrate_pages, pid_t, pid, unsigned long, maxnode,
 		goto out_put;
 	}
 
-	if (!nodes_subset(*new, node_states[N_MEMORY])) {
+	if (!nodes_subset(*new, node_states[N_MEMORY]) &&
+		!nodes_subset(*new, node_states[N_COHERENT_MEMORY])) {
 		err = -EINVAL;
 		goto out_put;
 	}
@@ -1671,7 +1682,8 @@ static nodemask_t *policy_nodemask(gfp_t gfp, struct mempolicy *policy)
 	/* Lower zones don't get a nodemask applied for MPOL_BIND */
 	if (unlikely(policy->mode == MPOL_BIND) &&
 			apply_policy_zone(policy, gfp_zone(gfp)) &&
-			cpuset_nodemask_valid_mems_allowed(&policy->v.nodes))
+			(cpuset_nodemask_valid_mems_allowed(&policy->v.nodes) ||
+			nodes_intersects(policy->v.nodes, node_states[N_COHERENT_MEMORY])))
 		return &policy->v.nodes;
 
 	return NULL;
@@ -1691,6 +1703,17 @@ static struct zonelist *policy_zonelist(gfp_t gfp, struct mempolicy *policy,
 		 */
 		WARN_ON_ONCE(policy->mode == MPOL_BIND && (gfp & __GFP_THISNODE));
 	}
+
+	/*
+	 * It is not sufficient to have the right nodemask, we need the
+	 * correct zonelist for N_COHERENT_MEMORY
+	 */
+	if (nodes_intersects(policy->v.nodes, node_states[N_COHERENT_MEMORY]))
+		/*
+		 * Ideally we should pick the best node, but for now use
+		 * any one
+		 */
+		nd = first_node(node_states[N_COHERENT_MEMORY]);
 
 	return node_zonelist(nd, gfp);
 }
@@ -2690,7 +2713,8 @@ int mpol_parse_str(char *str, struct mempolicy **mpol)
 		*nodelist++ = '\0';
 		if (nodelist_parse(nodelist, nodes))
 			goto out;
-		if (!nodes_subset(nodes, node_states[N_MEMORY]))
+		if (!nodes_subset(nodes, node_states[N_MEMORY]) &&
+			!nodes_subset(nodes, node_states[N_COHERENT_MEMORY]))
 			goto out;
 	} else
 		nodes_clear(nodes);

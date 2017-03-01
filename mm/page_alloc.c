@@ -4798,6 +4798,7 @@ static int find_next_best_node(int node, nodemask_t *used_node_mask)
 	int min_val = INT_MAX;
 	int best_node = NUMA_NO_NODE;
 	const struct cpumask *tmp = cpumask_of_node(0);
+	nodemask_t tmp_mask, tmp_mask2;
 
 	/* Use the local node if we haven't already */
 	if (!node_isset(node, *used_node_mask)) {
@@ -4805,7 +4806,17 @@ static int find_next_best_node(int node, nodemask_t *used_node_mask)
 		return node;
 	}
 
-	for_each_node_state(n, N_MEMORY) {
+	tmp_mask = node_states[N_MEMORY];
+	tmp_mask2 = node_states[N_COHERENT_MEMORY];
+
+	/*
+	 * If the nodemask has one coherent node, add others
+	 * as well
+	 */
+	if (node_state(node, N_COHERENT_MEMORY))
+		nodes_or(tmp_mask, tmp_mask2, tmp_mask);
+
+	for_each_node_mask(n, tmp_mask) {
 
 		/* Don't want a node to appear more than once */
 		if (node_isset(n, *used_node_mask))
@@ -6225,7 +6236,7 @@ static unsigned long __init early_calculate_totalpages(void)
 		unsigned long pages = end_pfn - start_pfn;
 
 		totalpages += pages;
-		if (pages)
+		if (pages && !node_state(nid, N_COHERENT_MEMORY))
 			node_set_state(nid, N_MEMORY);
 	}
 	return totalpages;
@@ -6535,9 +6546,10 @@ void __init free_area_init_nodes(unsigned long *max_zone_pfn)
 				find_min_pfn_for_node(nid), NULL);
 
 		/* Any memory on that node */
-		if (pgdat->node_present_pages)
+		if (pgdat->node_present_pages && !node_state(nid, N_COHERENT_MEMORY)) {
 			node_set_state(nid, N_MEMORY);
-		check_for_memory(pgdat, nid);
+			check_for_memory(pgdat, nid);
+		}
 	}
 }
 
