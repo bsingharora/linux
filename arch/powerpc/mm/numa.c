@@ -652,6 +652,7 @@ static void __init parse_drconf_memory(struct device_node *memory)
 	unsigned long lmb_size, base, size, sz;
 	int nid;
 	struct assoc_arrays aa = { .arrays = NULL };
+	int coherent = 0;
 
 	n = of_get_drconf_memory(memory, &dm);
 	if (!n)
@@ -696,6 +697,9 @@ static void __init parse_drconf_memory(struct device_node *memory)
 				size = read_n_cells(n_mem_size_cells, &usm);
 			}
 			nid = of_drconf_to_nid_single(&drmem, &aa);
+			coherent = of_device_is_compatible(memory, "ibm,coherent-device-memory");
+			if (coherent)
+				node_set_state(nid, N_COHERENT_MEMORY);
 			fake_numa_create_new_node(
 				((base + size) >> PAGE_SHIFT),
 					   &nid);
@@ -713,6 +717,7 @@ static int __init parse_numa_properties(void)
 	struct device_node *memory;
 	int default_nid = 0;
 	unsigned long i;
+	int coherent = 0;
 
 	if (numa_enabled == 0) {
 		printk(KERN_WARNING "NUMA disabled by user\n");
@@ -785,6 +790,9 @@ new_range:
 
 		fake_numa_create_new_node(((start + size) >> PAGE_SHIFT), &nid);
 		node_set_online(nid);
+		coherent = of_device_is_compatible(memory, "ibm,coherent-device-memory");
+		if (coherent)
+			node_set_state(nid, N_COHERENT_MEMORY);
 
 		size = numa_enforce_memory_limit(start, size);
 		if (size)
