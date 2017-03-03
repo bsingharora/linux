@@ -18,6 +18,8 @@
 #include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/memory_hotplug.h>
+#include <linux/swap.h>
+#include <linux/swapops.h>
 
 #ifndef ioremap_cache
 /* temporary while we convert existing ioremap_cache users to memremap */
@@ -200,6 +202,21 @@ void put_zone_device_page(struct page *page)
 }
 EXPORT_SYMBOL(put_zone_device_page);
 
+#if IS_ENABLED(CONFIG_DEVICE_UNADDRESSABLE)
+int device_entry_fault(struct vm_area_struct *vma,
+		       unsigned long addr,
+		       swp_entry_t entry,
+		       unsigned flags,
+		       pmd_t *pmdp)
+{
+	struct page *page = device_entry_to_page(entry);
+
+	BUG_ON(!page->pgmap->page_fault);
+	return page->pgmap->page_fault(vma, addr, page, flags, pmdp);
+}
+EXPORT_SYMBOL(device_entry_fault);
+#endif /* CONFIG_DEVICE_UNADDRESSABLE */
+
 static void pgmap_radix_release(struct resource *res)
 {
 	resource_size_t key, align_start, align_size, align_end;
@@ -255,7 +272,7 @@ static void devm_memremap_pages_release(struct device *dev, void *data)
 
 	lock_device_hotplug();
 	mem_hotplug_begin();
-	arch_remove_memory(align_start, align_size, MEMORY_DEVICE);
+	arch_remove_memory(align_start, align_size, pgmap->flags);
 	mem_hotplug_done();
 	unlock_device_hotplug();
 
@@ -334,6 +351,8 @@ void *devm_memremap_pages(struct device *dev, struct resource *res,
 	}
 	pgmap->ref = ref;
 	pgmap->res = &page_map->res;
+	pgmap->flags = MEMORY_DEVICE;
+	pgmap->page_fault = NULL;
 	pgmap->page_free = NULL;
 	pgmap->data = NULL;
 
@@ -374,7 +393,7 @@ void *devm_memremap_pages(struct device *dev, struct resource *res,
 
 	lock_device_hotplug();
 	mem_hotplug_begin();
-	error = arch_add_memory(align_start, align_size, MEMORY_DEVICE);
+	error = arch_add_memory(align_start, align_size, pgmap->flags);
 	mem_hotplug_done();
 	unlock_device_hotplug();
 	if (error)
