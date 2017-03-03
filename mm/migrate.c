@@ -235,7 +235,7 @@ static int remove_migration_pte(struct page *page, struct vm_area_struct *vma,
 		if (unlikely(is_zone_device_page(new)) && !is_addressable_page(new)) {
 			entry = make_device_entry(new, pte_write(pte));
 			pte = swp_entry_to_pte(entry);
-			if (pte_swp_soft_dirty(*ptep))
+			if (pte_swp_soft_dirty(*pvmw.pte))
 				pte = pte_mksoft_dirty(pte);
 		} else
 			flush_dcache_page(new);

@@ -126,7 +126,7 @@ int __weak remove_section_mapping(unsigned long start, unsigned long end)
 	return -ENODEV;
 }
 
-int arch_add_memory(int nid, u64 start, u64 size, bool for_device)
+int arch_add_memory(int nid, u64 start, u64 size, int flags)
 {
 	const int supported_flags = MEMORY_DEVICE |
 				    MEMORY_DEVICE_ALLOW_MIGRATE;

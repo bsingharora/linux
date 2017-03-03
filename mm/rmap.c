@@ -1304,6 +1304,8 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 	int ret = SWAP_AGAIN;
 	struct rmap_private *rp = arg;
 	enum ttu_flags flags = rp->flags;
+	pte_t *pte;
+	spinlock_t *ptl;
 
 	/* munlock has nothing to gain from examining un-locked vmas */
 	if ((flags & TTU_MUNLOCK) && !(vma->vm_flags & VM_LOCKED))
@@ -1333,18 +1335,21 @@ static int try_to_unmap_one(struct page *page, struct vm_area_struct *vma,
 		pteval = ptep_get_and_clear(mm, address, pte);
 		if (pte_present(pteval) || pte_none(pteval)) {
 			set_pte_at(mm, address, pte, pteval);
-			goto out_unmap;
+			pte_unmap_unlock(pte, ptl);
+			goto out;
 		}
 
 		entry = pte_to_swp_entry(pteval);
 		if (!is_device_entry(entry)) {
 			set_pte_at(mm, address, pte, pteval);
-			goto out_unmap;
+			pte_unmap_unlock(pte, ptl);
+			goto out;
 		}
 
 		if (device_entry_to_page(entry) != page) {
 			set_pte_at(mm, address, pte, pteval);
-			goto out_unmap;
+			pte_unmap_unlock(pte, ptl);
+			goto out;
 		}
 
 		/*
@@ -1497,6 +1502,7 @@ discard:
 		put_page(page);
 		mmu_notifier_invalidate_page(mm, address);
 	}
+out:
 	return ret;
 }
 
