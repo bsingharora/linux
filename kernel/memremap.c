@@ -249,7 +249,7 @@ static void devm_memremap_pages_release(struct device *dev, void *data)
 
 	lock_device_hotplug();
 	mem_hotplug_begin();
-	arch_remove_memory(align_start, align_size);
+	arch_remove_memory(align_start, align_size, MEMORY_DEVICE);
 	mem_hotplug_done();
 	unlock_device_hotplug();
 
@@ -366,7 +366,7 @@ void *devm_memremap_pages(struct device *dev, struct resource *res,
 
 	lock_device_hotplug();
 	mem_hotplug_begin();
-	error = arch_add_memory(nid, align_start, align_size, true);
+	error = arch_add_memory(align_start, align_size, MEMORY_DEVICE);
 	mem_hotplug_done();
 	unlock_device_hotplug();
 	if (error)
