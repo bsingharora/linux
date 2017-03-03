@@ -1,0 +1,20 @@
+Coherent Device Memory
+
+This branch has patches for CDM, the idea of CDM is to isolate
+an entire node and treat it as N_COHERENT_MEMORY. N_COHERENT_MEMORY
+is marked on system boot if the of node associated with memory@
+has ibm,coherent-device-memory set in the compatible property
+of the node.
+
+NOTE: it is a requirement of these patches that such a node have
+all memory as movable (see CONFIG_MOVABLE_NODE and movable_node
+command line parameter). In the absence of that, we have issues
+where slab/slub tries to deactivate_slab's on the coherent node
+and hit problems (we might consider fixing those issues later)
+
+This patchset also makes changes to policy_zonemask() and policy_
+nodemask() to make them aware of coherent memory along with some
+changes to how the best node is selected when creating node zonelists
+
+
+
