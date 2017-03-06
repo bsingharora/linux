@@ -36,7 +36,7 @@ static struct page *test_device_alloc_page(void)
 	 * This is a fake device so we alloc real system memory to fake
 	 * our device memory
 	 */
-	rpage = alloc_page(GFP_HIGHUSER | __GFP_ZERO);
+	rpage = alloc_page(GFP_HIGHUSER_MOVABLE | __GFP_ZERO);
 	if (!rpage)
 		return NULL;
 	get_page(rpage);
@@ -214,7 +214,7 @@ static struct platform_driver test_device_driver = {
 	.probe		= test_probe,
 	.remove		= test_remove,
 	.driver		= {
-		.name	= "HMM_DMIRROR",
+		.name	= "HMM_MIGRATE",
 	},
 };
 
