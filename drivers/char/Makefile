@@ -61,3 +61,4 @@ obj-$(CONFIG_TILE_SROM)		+= tile-srom.o
 obj-$(CONFIG_XILLYBUS)		+= xillybus/
 obj-$(CONFIG_POWERNV_OP_PANEL)	+= powernv-op-panel.o
 obj-$(CONFIG_HMM_DMIRROR)	+= hmm_dmirror.o
+obj-$(CONFIG_HMM_DMIRROR)	+= hmm_migrate_test.o
