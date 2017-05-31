@@ -862,7 +862,7 @@ static struct hmm_devmem *hmm_devmem_find(resource_size_t phys)
 	return radix_tree_lookup(&hmm_devmem_radix, phys >> PA_SECTION_SHIFT);
 }
 
-static int hmm_devmem_pages_create(struct hmm_devmem *devmem)
+static int hmm_devmem_pages_create(struct hmm_devmem *devmem, enum memory_type type)
 {
 	resource_size_t key, align_start, align_size, align_end;
 	struct device *device = devmem->device;
@@ -885,7 +885,7 @@ static int hmm_devmem_pages_create(struct hmm_devmem *devmem)
 	if (is_ram == REGION_INTERSECTS)
 		return -ENXIO;
 
-	devmem->pagemap.type = MEMORY_DEVICE_PRIVATE;
+	devmem->pagemap.type = type;
 	devmem->pagemap.res = devmem->resource;
 	devmem->pagemap.page_fault = hmm_devmem_fault;
 	devmem->pagemap.page_free = hmm_devmem_free;
@@ -924,8 +924,12 @@ static int hmm_devmem_pages_create(struct hmm_devmem *devmem)
 		nid = numa_mem_id();
 
 	mem_hotplug_begin();
-	ret = add_pages(nid, align_start >> PAGE_SHIFT,
-			align_size >> PAGE_SHIFT, false);
+	if (type == MEMORY_DEVICE_PRIVATE)
+		ret = add_pages(nid, align_start >> PAGE_SHIFT,
+				align_size >> PAGE_SHIFT, false);
+	else
+		ret = arch_add_memory(nid, align_start >> PAGE_SHIFT,
+				align_size >> PAGE_SHIFT, false);
 	if (ret) {
 		mem_hotplug_done();
 		goto error_add_memory;
@@ -1048,7 +1052,7 @@ struct hmm_devmem *hmm_devmem_add(const struct hmm_devmem_ops *ops,
 	devmem->pfn_last = devmem->pfn_first +
 			   (resource_size(devmem->resource) >> PAGE_SHIFT);
 
-	ret = hmm_devmem_pages_create(devmem);
+	ret = hmm_devmem_pages_create(devmem, MEMORY_DEVICE_PRIVATE);
 	if (ret)
 		goto error_pages;
 
@@ -1074,6 +1078,67 @@ error_percpu_ref:
 	return ERR_PTR(ret);
 }
 EXPORT_SYMBOL(hmm_devmem_add);
+
+struct hmm_devmem *hmm_devmem_add_coherent(const struct hmm_devmem_ops *ops,
+						struct device *device,
+						struct resource *res)
+{
+	struct hmm_devmem *devmem;
+	resource_size_t addr;
+	int ret;
+
+	static_branch_enable(&device_private_key);
+
+	devmem = devres_alloc_node(&hmm_devmem_release, sizeof(*devmem),
+				   GFP_KERNEL, dev_to_node(device));
+	if (!devmem)
+		return ERR_PTR(-ENOMEM);
+
+	init_completion(&devmem->completion);
+	devmem->resource = res;
+	devmem->device = device;
+	devmem->ops = ops;
+
+	ret = percpu_ref_init(&devmem->ref, &hmm_devmem_ref_release,
+			      0, GFP_KERNEL);
+	if (ret)
+		goto error_percpu_ref;
+
+	ret = devm_add_action(device, hmm_devmem_ref_exit, &devmem->ref);
+	if (ret)
+		goto error_devm_add_action;
+
+	devmem->resource->desc = IORES_DESC_DEVICE_COHERENT_MEMORY;
+	devmem->pfn_first = devmem->resource->start >> PAGE_SHIFT;
+	devmem->pfn_last = devmem->pfn_first +
+			   (resource_size(devmem->resource) >> PAGE_SHIFT);
+
+	ret = hmm_devmem_pages_create(devmem, MEMORY_DEVICE_PRIVATE_COHERENT);
+	if (ret)
+		goto error_pages;
+
+	devres_add(device, devmem);
+
+	ret = devm_add_action(device, hmm_devmem_ref_kill, &devmem->ref);
+	if (ret) {
+		hmm_devmem_remove(devmem);
+		return ERR_PTR(ret);
+	}
+
+	return devmem;
+
+error_pages:
+	devm_release_mem_region(device, devmem->resource->start,
+				resource_size(devmem->resource));
+error_no_resource:
+error_devm_add_action:
+	hmm_devmem_ref_kill(&devmem->ref);
+	hmm_devmem_ref_exit(&devmem->ref);
+error_percpu_ref:
+	devres_free(devmem);
+	return ERR_PTR(ret);
+}
+EXPORT_SYMBOL(hmm_devmem_add_coherent);
 
 /*
  * hmm_devmem_remove() - remove device memory (kill and free ZONE_DEVICE)

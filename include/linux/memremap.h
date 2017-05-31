@@ -56,10 +56,18 @@ static inline struct vmem_altmap *to_vmem_altmap(unsigned long memmap_start)
  * page must be treated as an opaque object, rather than a "normal" struct page.
  * A more complete discussion of unaddressable memory may be found in
  * include/linux/hmm.h and Documentation/vm/hmm.txt.
+ *
+ * MEMORY_DEVICE_PUBLIC_COHERENT:
+ * Device memory that is directly addressable by the CPU: CPU can
+ * read and write PUBLIC_COHERENT. This is device memory that can be seen from
+ * both the device and CPU coherently, we can expose them as NUMA nodes, but
+ * the preference is to have them hidden by ZONE_DEVICE and work with the HMM
+ * infrastructure.
  */
 enum memory_type {
 	MEMORY_DEVICE_PUBLIC = 0,
 	MEMORY_DEVICE_PRIVATE,
+	MEMORY_DEVICE_PRIVATE_COHERENT,
 };
 
 /*
@@ -133,6 +141,13 @@ static inline bool is_device_private_page(const struct page *page)
 	return is_zone_device_page(page) &&
 		page->pgmap->type == MEMORY_DEVICE_PRIVATE;
 }
+
+static inline bool is_device_coherent_page(const struct page *page)
+{
+	return is_zone_device_page(page) &&
+		page->pgmap->type == MEMORY_DEVICE_PRIVATE_COHERENT;
+}
+
 #else
 static inline void *devm_memremap_pages(struct device *dev,
 		struct resource *res, struct percpu_ref *ref,
@@ -153,6 +168,11 @@ static inline struct dev_pagemap *find_dev_pagemap(resource_size_t phys)
 }
 
 static inline bool is_device_private_page(const struct page *page)
+{
+	return false;
+}
+
+static inline bool is_device_coherent_page(const struct page *page)
 {
 	return false;
 }
