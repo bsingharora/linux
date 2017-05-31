@@ -292,7 +292,7 @@ config ARCH_ENABLE_HUGEPAGE_MIGRATION
 config ARCH_HAS_HMM
 	bool
 	default y
-	depends on X86_64
+	depends on (X86_64 || (PPC64 && PPC_BOOK3S))
 	depends on ZONE_DEVICE
 	depends on MMU && 64BIT
 	depends on MEMORY_HOTPLUG

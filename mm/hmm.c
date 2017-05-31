@@ -928,8 +928,7 @@ static int hmm_devmem_pages_create(struct hmm_devmem *devmem, enum memory_type t
 		ret = add_pages(nid, align_start >> PAGE_SHIFT,
 				align_size >> PAGE_SHIFT, false);
 	else
-		ret = arch_add_memory(nid, align_start >> PAGE_SHIFT,
-				align_size >> PAGE_SHIFT, false);
+		ret = arch_add_memory(nid, align_start, align_size, false);
 	if (ret) {
 		mem_hotplug_done();
 		goto error_add_memory;
@@ -1084,7 +1083,6 @@ struct hmm_devmem *hmm_devmem_add_coherent(const struct hmm_devmem_ops *ops,
 						struct resource *res)
 {
 	struct hmm_devmem *devmem;
-	resource_size_t addr;
 	int ret;
 
 	static_branch_enable(&device_private_key);
@@ -1130,7 +1128,6 @@ struct hmm_devmem *hmm_devmem_add_coherent(const struct hmm_devmem_ops *ops,
 error_pages:
 	devm_release_mem_region(device, devmem->resource->start,
 				resource_size(devmem->resource));
-error_no_resource:
 error_devm_add_action:
 	hmm_devmem_ref_kill(&devmem->ref);
 	hmm_devmem_ref_exit(&devmem->ref);
