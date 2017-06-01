@@ -761,6 +761,19 @@ config DEVICE_PRIVATE
 	  memory; i.e., memory that is only accessible from the device (or
 	  group of devices).
 
+config DEVICE_PUBLIC
+	bool "Unaddressable device memory (GPU memory, ...)"
+	depends on X86_64
+	depends on ZONE_DEVICE
+	depends on MEMORY_HOTPLUG
+	depends on MEMORY_HOTREMOVE
+	depends on SPARSEMEM_VMEMMAP
+
+	help
+	  Allows creation of struct pages to represent addressable device
+	  memory; i.e., memory that is accessible from both the device and
+	  the CPU
+
 config FRAME_VECTOR
 	bool
 
