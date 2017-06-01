@@ -229,12 +229,16 @@ static bool remove_migration_pte(struct page *page, struct vm_area_struct *vma,
 		if (is_write_migration_entry(entry))
 			pte = maybe_mkwrite(pte, vma);
 
-		if (unlikely(is_zone_device_page(new)) &&
-		    is_device_private_page(new)) {
-			entry = make_device_private_entry(new, pte_write(pte));
-			pte = swp_entry_to_pte(entry);
-			if (pte_swp_soft_dirty(*pvmw.pte))
-				pte = pte_mksoft_dirty(pte);
+		if (unlikely(is_zone_device_page(new))) {
+			if (is_device_private_page(new)) {
+				entry = make_device_private_entry(new, pte_write(pte));
+				pte = swp_entry_to_pte(entry);
+				if (pte_swp_soft_dirty(*pvmw.pte))
+					pte = pte_mksoft_dirty(pte);
+			} else if (is_device_public_page(new)) {
+				pte = pte_mkdevmap(pte);
+				flush_dcache_page(new);
+			}
 		} else
 			flush_dcache_page(new);
 
@@ -408,12 +412,11 @@ int migrate_page_move_mapping(struct address_space *mapping,
 	void **pslot;
 
 	/*
-	 * ZONE_DEVICE pages have 1 refcount always held by their device
-	 *
-	 * Note that DAX memory will never reach that point as it does not have
-	 * the MEMORY_DEVICE_ALLOW_MIGRATE flag set (see memory_hotplug.h).
+	 * Device public or private pages have an extra refcount as they are
+	 * ZONE_DEVICE pages.
 	 */
-	expected_count += is_zone_device_page(page);
+	expected_count += is_device_private_page(page);
+	expected_count += is_device_public_page(page);
 
 	if (!mapping) {
 		/* Anonymous page without mapping */
@@ -2166,7 +2169,7 @@ static int migrate_vma_collect_pmd(pmd_t *pmdp,
 			if (is_write_device_private_entry(entry))
 				mpfn |= MIGRATE_PFN_WRITE;
 		} else {
-			page = vm_normal_page(migrate->vma, addr, pte);
+			page = _vm_normal_page(migrate->vma, addr, pte, true);
 			mpfn = migrate_pfn(pfn) | MIGRATE_PFN_MIGRATE;
 			mpfn |= pte_write(pte) ? MIGRATE_PFN_WRITE : 0;
 		}
@@ -2291,9 +2294,10 @@ static bool migrate_vma_check_page(struct page *page)
 
 	/* Page from ZONE_DEVICE have one extra reference */
 	if (is_zone_device_page(page)) {
-		if (is_device_private_page(page)) {
+		if (is_device_private_page(page) ||
+		    is_device_public_page(page))
 			extra++;
-		} else
+		else
 			/* Other ZONE_DEVICE memory type are not supported */
 			return false;
 	}
@@ -2521,11 +2525,18 @@ static void migrate_vma_insert_page(struct migrate_vma *migrate,
 	 */
 	__SetPageUptodate(page);
 
-	if (is_zone_device_page(page) && is_device_private_page(page)) {
-		swp_entry_t swp_entry;
+	if (is_zone_device_page(page)) {
+		if (is_device_private_page(page)) {
+			swp_entry_t swp_entry;
 
-		swp_entry = make_device_private_entry(page, vma->vm_flags & VM_WRITE);
-		entry = swp_entry_to_pte(swp_entry);
+			swp_entry = make_device_private_entry(page, vma->vm_flags & VM_WRITE);
+			entry = swp_entry_to_pte(swp_entry);
+		} else if (is_device_public_page(page)) {
+			entry = pte_mkold(mk_pte(page, READ_ONCE(vma->vm_page_prot)));
+			if (vma->vm_flags & VM_WRITE)
+				entry = pte_mkwrite(pte_mkdirty(entry));
+			entry = pte_mkdevmap(entry);
+		}
 	} else {
 		entry = mk_pte(page, vma->vm_page_prot);
 		if (vma->vm_flags & VM_WRITE)
@@ -2612,7 +2623,7 @@ static void migrate_vma_pages(struct migrate_vma *migrate)
 					migrate->src[i] &= ~MIGRATE_PFN_MIGRATE;
 					continue;
 				}
-			} else {
+			} else if (!is_device_public_page(newpage)) {
 				/*
 				 * Other types of ZONE_DEVICE page are not
 				 * supported.

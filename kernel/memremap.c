@@ -350,7 +350,7 @@ void *devm_memremap_pages(struct device *dev, struct resource *res,
 	}
 	pgmap->ref = ref;
 	pgmap->res = &page_map->res;
-	pgmap->type = MEMORY_DEVICE_PUBLIC;
+	pgmap->type = MEMORY_DEVICE_PMEM;
 	pgmap->page_fault = NULL;
 	pgmap->page_free = NULL;
 	pgmap->data = NULL;
@@ -466,7 +466,7 @@ struct vmem_altmap *to_vmem_altmap(unsigned long memmap_start)
 
 
 #ifdef CONFIG_DEVICE_PRIVATE
-void put_zone_device_private_page(struct page *page)
+void put_zone_device_private_or_public_page(struct page *page)
 {
 	int count = page_ref_dec_return(page);
 
@@ -474,10 +474,15 @@ void put_zone_device_private_page(struct page *page)
 	 * If refcount is 1 then page is freed and refcount is stable as nobody
 	 * holds a reference on the page.
 	 */
-	if (count == 1)
+	if (count == 1) {
+		/* Clear Active bit in case of parallel mark_page_accessed */
+		__ClearPageActive(page);
+		__ClearPageWaiters(page);
+
 		page->pgmap->page_free(page, page->pgmap->data);
+	}
 	else if (!count)
 		__put_page(page);
 }
-EXPORT_SYMBOL(put_zone_device_private_page);
+EXPORT_SYMBOL(put_zone_device_private_or_public_page);
 #endif /* CONFIG_DEVICE_PRIVATE */
