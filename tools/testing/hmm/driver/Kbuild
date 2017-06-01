@@ -1,0 +1,4 @@
+obj-m := cdm.o
+
+cdm-y := drv.o
+cdm-y += mig.o
