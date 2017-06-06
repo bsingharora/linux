@@ -772,24 +772,6 @@ static void __meminit free_pmd_table(pmd_t *pmd_start, pud_t *pud)
 	spin_unlock(&init_mm.page_table_lock);
 }
 
-static void __meminit free_pud_table(pud_t *pud_start, p4d_t *p4d)
-{
-	pud_t *pud;
-	int i;
-
-	for (i = 0; i < PTRS_PER_PUD; i++) {
-		pud = pud_start + i;
-		if (!pud_none(*pud))
-			return;
-	}
-
-	/* free a pud talbe */
-	free_pagetable(p4d_page(*p4d), 0);
-	spin_lock(&init_mm.page_table_lock);
-	p4d_clear(p4d);
-	spin_unlock(&init_mm.page_table_lock);
-}
-
 static void __meminit
 remove_pte_table(pte_t *pte_start, unsigned long addr, unsigned long end,
 		 bool direct)
@@ -991,7 +973,6 @@ remove_p4d_table(p4d_t *p4d_start, unsigned long addr, unsigned long end,
 
 		pud_base = pud_offset(p4d, 0);
 		remove_pud_table(pud_base, addr, next, direct);
-		free_pud_table(pud_base, p4d);
 	}
 
 	if (direct)
