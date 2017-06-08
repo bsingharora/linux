@@ -590,7 +590,8 @@ static int dummy_do_read(struct dmirror *dmirror,
 		if (is_zone_device_page(page)) {
 			if (!dummy_device_is_mine(mdevice, page))
 				return -ENOENT;
-			page = (void *)hmm_devmem_page_get_drvdata(page);
+			if (is_device_private_page(page))
+				page = (void *)hmm_devmem_page_get_drvdata(page);
 		}
 
 		tmp = kmap(page);
@@ -670,7 +671,8 @@ static int dummy_do_write(struct dmirror *dmirror,
 		if (is_zone_device_page(page)) {
 			if (!dummy_device_is_mine(mdevice, page))
 				return -ENOENT;
-			page = (void *)hmm_devmem_page_get_drvdata(page);
+			if (is_device_private_page(page))
+				page = (void *)hmm_devmem_page_get_drvdata(page);
 		}
 
 		tmp = kmap(page);
@@ -801,7 +803,8 @@ static void dummy_migrate_alloc_and_copy(struct vm_area_struct *vma,
 			if (!dummy_device_is_mine(mdevice, spage)) {
 				continue;
 			}
-			spage = (void *)hmm_devmem_page_get_drvdata(spage);
+			if (is_device_private_page(spage))
+				spage = (void *)hmm_devmem_page_get_drvdata(spage);
 		}
 
 		dpage = dummy_device_alloc_page(mdevice);
@@ -810,7 +813,10 @@ static void dummy_migrate_alloc_and_copy(struct vm_area_struct *vma,
 			continue;
 		}
 
-		rpage = (void *)hmm_devmem_page_get_drvdata(dpage);
+		if (is_device_private_page(dpage))
+			rpage = (void *)hmm_devmem_page_get_drvdata(dpage);
+		else
+			rpage = dpage;
 
 		if (spage)
 			copy_highpage(rpage, spage);
@@ -996,7 +1002,9 @@ static void dummy_devmem_fault_alloc_and_copy(struct vm_area_struct *vma,
 			continue;
 		if (!dummy_device_is_mine(fault->mdevice, spage))
 			continue;
-		spage = (void *)hmm_devmem_page_get_drvdata(spage);
+
+		if (is_device_private_page(spage))
+			spage = (void *)hmm_devmem_page_get_drvdata(spage);
 
 		dpage = hmm_vma_alloc_locked_page(vma, addr);
 		if (!dpage) {
@@ -1053,12 +1061,32 @@ static const struct hmm_devmem_ops dmirror_devmem_ops = {
 static int dmirror_probe(struct platform_device *pdev)
 {
 	struct dmirror_device *mdevice = platform_get_drvdata(pdev);
+	struct resource *p;
 	unsigned long pfn;
 	int ret;
 
 	mdevice->hmm_device = hmm_device_new(mdevice);
 	if (IS_ERR(mdevice->hmm_device))
 		return PTR_ERR(mdevice->hmm_device);
+
+	for (p = iomem_resource.child; p ; p = p->sibling) {
+		if (p->desc != IORES_DESC_DEVICE_PUBLIC_MEMORY)
+			continue;
+
+		mdevice->devmem = hmm_devmem_add_resource(&dmirror_devmem_ops,
+							  &mdevice->hmm_device->device,
+							  p);
+		if (IS_ERR(mdevice->devmem)) {
+			hmm_device_put(mdevice->hmm_device);
+			return PTR_ERR(mdevice->devmem);
+		}
+		printk(KERN_INFO "using %lldMiB at 0x%llx as CDM2 memory\n",
+			(p->end - p->start) >> 20, p->start);
+		printk(KERN_INFO "CDM pages %p to %p\n",
+			pfn_to_page(p->start >> 12), pfn_to_page(p->end >> 12));
+		goto next;
+	}
+
 	mdevice->devmem = hmm_devmem_add(&dmirror_devmem_ops,
 					 &mdevice->hmm_device->device,
 					 64 << 20);
@@ -1067,6 +1095,7 @@ static int dmirror_probe(struct platform_device *pdev)
 		return PTR_ERR(mdevice->devmem);
 	}
 
+next:
 	ret = alloc_chrdev_region(&mdevice->dev, 0, 1, "HMM_DMIRROR");
 	if (ret < 0) {
 		hmm_devmem_remove(mdevice->devmem);
