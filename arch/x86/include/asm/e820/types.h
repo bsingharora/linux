@@ -28,6 +28,15 @@ enum e820_type {
 	E820_TYPE_PRAM		= 12,
 
 	/*
+	 * This is a non-standard fake e820 map for the purpose of
+	 * testing CDM by stealing some regular ram during boot to
+	 * pose as device memory.
+	 *
+	 * See Documentation/mm/hmm.txt
+	 */
+	E820_TYPE_CDM		= 127,
+
+	/*
 	 * Reserved RAM used by the kernel itself if
 	 * CONFIG_INTEL_TXT=y is enabled, memory of this type
 	 * will be included in the S3 integrity calculation
