@@ -1165,7 +1165,7 @@ void hmm_devmem_remove(struct hmm_devmem *devmem)
 	start = devmem->resource->start;
 	size = resource_size(devmem->resource);
 
-	cdm = devmem->resource->desc == MEMORY_DEVICE_PUBLIC;
+	cdm = devmem->resource->desc == IORES_DESC_DEVICE_PUBLIC_MEMORY;
 	hmm_devmem_ref_kill(&devmem->ref);
 	hmm_devmem_ref_exit(&devmem->ref);
 	hmm_devmem_pages_remove(devmem);
