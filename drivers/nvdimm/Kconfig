@@ -102,4 +102,14 @@ config NVDIMM_DAX
 
 	  Select Y if unsure
 
+config OF_NVDIMM
+	tristate "Device-tree support for NVDIMMs"
+	depends on OF
+	default LIBNVDIMM
+	help
+	  Allows byte addressable persistent memory regions to be described in the
+	  device-tree.
+
+	  Select Y if unsure.
+
 endif

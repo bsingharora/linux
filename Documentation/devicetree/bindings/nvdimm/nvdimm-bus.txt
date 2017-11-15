@@ -1,0 +1,69 @@
+Device-tree bindings for nonvolatile-memory / NVDIMMs
+-----------------------------------------------------
+
+Non-volatile DIMMs are memory modules used to provide (cacheable) main memory that
+retains its contents across power cycles. In more practical terms, they are kind
+of storage device where the contents can be accessed by the CPU directly,
+rather than indirectly via a storage controller or similar. This can provide
+substantial performance improvements for applications designed to take
+advantage of in-memory storage.
+
+This binding provides a way to describe memory regions that should be managed
+by an NVDIMM storage driver (libNVDIMM in Linux) and some of the associated
+metadata. The binding itself is split into two main parts: A container bus and
+its sub-nodes which describe which memory address ranges corresponding to
+NVDIMM backed memory.
+
+Bindings for the container bus:
+------------------------------
+
+Required properties:
+ - compatible = "nvdimm-bus";
+ - ranges;
+	A blank ranges property is required because the sub-nodes have
+	addresses in the system's physical address space.
+
+The use of a container bus is mainly to handle future expansion of the binding. For
+comparison the ACPI equivalent of this binding (NFIT) describes: Memory regions, DIMM
+control structures, Block mode DIMM control structures, interleave sets, and more. Some
+of these structures cross reference each other so everyone should be happier if we keep
+it relatively self contained.
+
+Bindings for the region nodes:
+-----------------------------
+
+Required properties:
+	- compatible = "nvdimm-persistent" or "nvdimm-volatile"
+
+		The "nvdimm-persistent" region type indicates that this memory region
+		is actually a persistent region. The volatile type is mainly useful
+		for testing and RAM disks that can persist across kexec.
+
+	- reg = <base, size>;
+		The reg property should only contain one address range.
+
+Optional properties:
+	- Any relevant NUMA assocativity properties for the target platform.
+
+A complete example:
+--------------------
+
+/ {
+	#size-cells = <1>;
+	#address-cells = <1>;
+
+	nonvolatile-memory {
+		compatible = "nonvolatile-memory";
+		ranges;
+
+		region@5000 {
+			compatible = "nvdimm-persistent";
+			reg = <0x5000 0x1000>;
+		};
+
+		region@6000 {
+			compatible = "nvdimm-volatile";
+			reg = <0x6000 0x1000>;
+		};
+	};
+};
