@@ -1,19 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright 2017, IBM Corporation
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, you can access it online at
- * http://www.gnu.org/licenses/gpl-2.0.html.
+ * Copyright (C) 2018, IBM Corporation
  */
 
 #define pr_fmt(fmt) "of_nvdimm: " fmt
@@ -31,7 +18,8 @@ static const struct attribute_group *region_attr_groups[] = {
 	NULL,
 };
 
-static int of_nvdimm_add_byte(struct nvdimm_bus *bus, struct device_node *np)
+static int of_nvdimm_add_byte_addr_region(struct nvdimm_bus *bus,
+					  struct device_node *np)
 {
 	struct nd_region_desc ndr_desc;
 	struct resource temp_res;
@@ -51,9 +39,7 @@ static int of_nvdimm_add_byte(struct nvdimm_bus *bus, struct device_node *np)
 	ndr_desc.res = &temp_res;
 	ndr_desc.of_node = np;
 	ndr_desc.attr_groups = region_attr_groups;
-#ifdef CONFIG_NUMA
 	ndr_desc.numa_node = of_node_to_nid(np);
-#endif
 	set_bit(ND_REGION_PAGEMAP, &ndr_desc.flags);
 
 	if (of_device_is_compatible(np, "nvdimm-volatile"))
@@ -68,43 +54,10 @@ static int of_nvdimm_add_byte(struct nvdimm_bus *bus, struct device_node *np)
 }
 
 static const struct of_device_id of_nvdimm_dev_types[] = {
-	{ .compatible = "nvdimm-persistent", .data = of_nvdimm_add_byte },
-	{ .compatible = "nvdimm-volatile", .data = of_nvdimm_add_byte },
+	{ .compatible = "nvdimm-persistent", },
+	{ .compatible = "nvdimm-volatile", },
 	{ },
 };
-
-static void of_nvdimm_parse_one(struct nvdimm_bus *bus,
-		struct device_node *node)
-{
-	int (*parse_node)(struct nvdimm_bus *, struct device_node *);
-	const struct of_device_id *match;
-	int rc;
-
-	if (of_node_test_and_set_flag(node, OF_POPULATED)) {
-		pr_debug("%pOF already parsed, skipping\n", node);
-		return;
-	}
-
-	match = of_match_node(of_nvdimm_dev_types, node);
-	if (!match) {
-		pr_info("No compatible match for '%pOF'\n", node);
-		of_node_clear_flag(node, OF_POPULATED);
-		return;
-	}
-
-	of_node_get(node);
-	parse_node = match->data;
-	rc = parse_node(bus, node);
-
-	if (rc) {
-		of_node_clear_flag(node, OF_POPULATED);
-		of_node_put(node);
-	}
-
-	pr_debug("Parsed %pOF, rc = %d\n", node, rc);
-
-	return;
-}
 
 /*
  * The nvdimm core refers to the bus descriptor structure at runtime
@@ -126,6 +79,7 @@ static int of_nvdimm_probe(struct platform_device *pdev)
 {
 	struct device_node *node, *child;
 	struct of_nd_private *priv;
+	const struct of_device_id *match;
 
 	node = dev_of_node(&pdev->dev);
 	if (!node)
@@ -147,8 +101,15 @@ static int of_nvdimm_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, priv);
 
 	/* now walk the node bus and setup regions, etc */
-	for_each_available_child_of_node(node, child)
-		of_nvdimm_parse_one(priv->bus, child);
+	for_each_available_child_of_node(node, child) {
+		match = of_match_node(of_nvdimm_dev_types, child);
+		pr_debug("Parsed %pOF\n", child);
+		if (!match)
+			continue;
+		of_platform_device_create(child, NULL, NULL);
+		if (!of_nvdimm_add_byte_addr_region(priv->bus, child))
+			continue;
+	}
 
 	return 0;
 
@@ -161,19 +122,11 @@ err:
 static int of_nvdimm_remove(struct platform_device *pdev)
 {
 	struct of_nd_private *priv = platform_get_drvdata(pdev);
-	struct device_node *node;
 
 	if (!priv)
 		return 0; /* possible? */
 
-	for_each_available_child_of_node(pdev->dev.of_node, node) {
-		if (!of_node_check_flag(node, OF_POPULATED))
-			continue;
-
-		of_node_clear_flag(node, OF_POPULATED);
-		of_node_put(node);
-		pr_debug("de-populating %s\n", node->full_name);
-	}
+	device_for_each_child(&pdev->dev, NULL, of_platform_device_destroy);
 
 	nvdimm_bus_unregister(priv->bus);
 	kfree(priv);
@@ -186,7 +139,7 @@ static const struct of_device_id of_nvdimm_bus_match[] = {
 	{ },
 };
 
-static const struct platform_driver of_nvdimm_driver = {
+static struct platform_driver of_nvdimm_driver = {
 	.probe = of_nvdimm_probe,
 	.remove = of_nvdimm_remove,
 	.driver = {
