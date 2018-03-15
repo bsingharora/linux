@@ -1,11 +1,11 @@
 Device-tree bindings for nonvolatile-memory / NVDIMMs
 -----------------------------------------------------
 
-Non-volatile DIMMs are memory modules used to provide (cacheable) main memory that
-retains its contents across power cycles. In more practical terms, they are kind
-of storage device where the contents can be accessed by the CPU directly,
-rather than indirectly via a storage controller or similar. This can provide
-substantial performance improvements for applications designed to take
+Non-volatile DIMMs are memory modules used to provide (cacheable) main memory
+that retains its contents across power cycles. In more practical terms, they
+are kind of storage device where the contents can be accessed by the CPU
+directly, rather than indirectly via a storage controller or similar. This can
+provide substantial performance improvements for applications designed to take
 advantage of in-memory storage.
 
 This binding provides a way to describe memory regions that should be managed
@@ -23,21 +23,26 @@ Required properties:
 	A blank ranges property is required because the sub-nodes have
 	addresses in the system's physical address space.
 
-The use of a container bus is mainly to handle future expansion of the binding. For
-comparison the ACPI equivalent of this binding (NFIT) describes: Memory regions, DIMM
-control structures, Block mode DIMM control structures, interleave sets, and more. Some
-of these structures cross reference each other so everyone should be happier if we keep
-it relatively self contained.
+The use of a container bus is mainly to handle future expansion of the
+binding. For comparison the ACPI equivalent of this binding (NFIT) describes:
+Memory regions, DIMM control structures, Block mode DIMM control structures,
+interleave sets, and more. Some of these structures cross reference each other
+so everyone should be happier if we keep it relatively self contained.
+For NVDIMM-N's for example we expect to add references to the i2c node
+corresponding to the location of the SPD EEPROM where the label metadata
+is stored.
 
 Bindings for the region nodes:
 -----------------------------
 
 Required properties:
-	- compatible = "nvdimm-persistent" or "nvdimm-volatile"
+	- compatible = "nvdimm,byte-addressable-persistent" or
+		"nvdimm,byte-addressable-volatile"
 
-		The "nvdimm-persistent" region type indicates that this memory region
-		is actually a persistent region. The volatile type is mainly useful
-		for testing and RAM disks that can persist across kexec.
+		The "nvdimm,byte-addressable-persistent" region type indicates
+		that this memory region is actually a persistent region. The
+		volatile type is mainly useful for testing and RAM disks that
+		can persist across kexec.
 
 	- reg = <base, size>;
 		The reg property should only contain one address range.
@@ -49,21 +54,22 @@ A complete example:
 --------------------
 
 / {
-	#size-cells = <1>;
-	#address-cells = <1>;
+	#size-cells = <2>;
+	#address-cells = <2>;
 
 	nonvolatile-memory {
-		compatible = "nonvolatile-memory";
+		compatible = "nvdimm-bus";
 		ranges;
 
 		region@5000 {
-			compatible = "nvdimm-persistent";
-			reg = <0x5000 0x1000>;
+			compatible = "nvdimm,byte-addressable-persistent";
+			reg = <0x00000001 0x00000000 0x00000000 0x40000000>
+
 		};
 
 		region@6000 {
-			compatible = "nvdimm-volatile";
-			reg = <0x6000 0x1000>;
+			compatible = "nvdimm,byte-addressable-volatile";
+			reg = <0x00000001 0x00000000 0x00000000 0x40000000>
 		};
 	};
 };
