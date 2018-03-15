@@ -46,6 +46,7 @@ static int of_nvdimm_add_byte_addr_region(struct nvdimm_bus *bus,
 		region = nvdimm_volatile_region_create(bus, &ndr_desc);
 	else
 		region = nvdimm_pmem_region_create(bus, &ndr_desc);
+	pr_debug("registering pmem region %px\n", region);
 
 	if (!region)
 		return -ENXIO;
@@ -54,8 +55,8 @@ static int of_nvdimm_add_byte_addr_region(struct nvdimm_bus *bus,
 }
 
 static const struct of_device_id of_nvdimm_dev_types[] = {
-	{ .compatible = "nvdimm-persistent", },
-	{ .compatible = "nvdimm-volatile", },
+	{ .compatible = "nvdimm,byte-addressable-persistent", },
+	{ .compatible = "nvdimm,byte-addressable-volatile", },
 	{ },
 };
 
@@ -84,6 +85,7 @@ static int of_nvdimm_probe(struct platform_device *pdev)
 	node = dev_of_node(&pdev->dev);
 	if (!node)
 		return -ENXIO;
+	pr_debug("of_node is %pOF\n", node);
 
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -106,6 +108,7 @@ static int of_nvdimm_probe(struct platform_device *pdev)
 		pr_debug("Parsed %pOF\n", child);
 		if (!match)
 			continue;
+		pr_debug("matched nvdimm-volatile or persistent\n");
 		of_platform_device_create(child, NULL, NULL);
 		if (!of_nvdimm_add_byte_addr_region(priv->bus, child))
 			continue;
@@ -127,7 +130,6 @@ static int of_nvdimm_remove(struct platform_device *pdev)
 		return 0; /* possible? */
 
 	device_for_each_child(&pdev->dev, NULL, of_platform_device_destroy);
-
 	nvdimm_bus_unregister(priv->bus);
 	kfree(priv);
 
